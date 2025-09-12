@@ -33,4 +33,5 @@ plugins {
 }
 
 include(":composeApp")
-include("common")
+include(":common")
+include(":common2")
