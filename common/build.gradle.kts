@@ -23,5 +23,14 @@ kotlin {
                 api(libs.kotlinx.io.core)
             }
         }
+        androidMain {
+            dependencies {
+                // Plain Maven JAR (packaging=jar). `./gradlew :common:compileAndroidMain`
+                // compiles fine, but its imports are UNRESOLVED in the IDE. <-- the bug
+                implementation(libs.zxing.core)
+                // AAR (packaging=aar) in the SAME source set — resolves in the IDE. Control.
+                implementation(libs.androidx.core)
+            }
+        }
     }
 }

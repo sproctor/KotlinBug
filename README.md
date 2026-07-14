@@ -1,66 +1,58 @@
-This is a Kotlin Multiplatform project targeting Android, iOS, Web, Desktop (JVM).
+# Repro: plain Maven JAR in `androidMain` is unresolved in the IDE for a `com.android.kotlin.multiplatform.library` module
 
-* [/composeApp](./composeApp/src) is for code that will be shared across your Compose Multiplatform applications.
-  It contains several subfolders:
-  - [commonMain](./composeApp/src/commonMain/kotlin) is for code that’s common for all targets.
-  - Other folders are for Kotlin code that will be compiled for only the platform indicated in the folder name.
-    For example, if you want to use Apple’s CoreCrypto for the iOS part of your Kotlin app,
-    the [iosMain](./composeApp/src/iosMain/kotlin) folder would be the right place for such calls.
-    Similarly, if you want to edit the Desktop (JVM) specific part, the [jvmMain](./composeApp/src/jvmMain/kotlin)
-    folder is the appropriate location.
+## Summary
 
-* [/iosApp](./iosApp/iosApp) contains iOS applications. Even if you’re sharing your UI with Compose Multiplatform,
-  you need this entry point for your iOS app. This is also where you should add SwiftUI code for your project.
+In a module using the `com.android.kotlin.multiplatform.library` plugin, a plain Maven
+**JAR** dependency (`packaging=jar`) declared in the `androidMain` source set is reported
+as **`Unresolved reference` in the IDE** (IntelliJ IDEA / Android Studio), even though the
+Gradle build compiles it successfully. An **AAR** dependency (`packaging=aar`) in the *same*
+source set resolves correctly. The only difference between the two is the artifact
+packaging, which isolates the problem to how the IDE attaches jar (non-AAR) dependencies to
+an Android KMP source set's analysis classpath.
 
-### Build and Run Android Application
+This is **not** [KTIJ-37107](https://youtrack.jetbrains.com/issue/KTIJ-37107): this project is
+**not** a Gradle composite build (no `includeBuild`), and Android-library (AAR) dependencies
+resolve fine here — it is the plain JARs that don't.
 
-To build and run the development version of the Android app, use the run configuration from the run widget
-in your IDE’s toolbar or build it directly from the terminal:
-- on macOS/Linux
-  ```shell
-  ./gradlew :composeApp:assembleDebug
-  ```
-- on Windows
-  ```shell
-  .\gradlew.bat :composeApp:assembleDebug
-  ```
+## Where to look
 
-### Build and Run Desktop (JVM) Application
+[`common/src/androidMain/kotlin/bug/JarVsAarRepro.kt`](common/src/androidMain/kotlin/bug/JarVsAarRepro.kt):
 
-To build and run the development version of the desktop app, use the run configuration from the run widget
-in your IDE’s toolbar or run it directly from the terminal:
-- on macOS/Linux
-  ```shell
-  ./gradlew :composeApp:run
-  ```
-- on Windows
-  ```shell
-  .\gradlew.bat :composeApp:run
-  ```
+```kotlin
+import com.google.zxing.BarcodeFormat        // from com.google.zxing:core  (JAR) -> RED in IDE
+import androidx.core.graphics.ColorUtils      // from androidx.core:core     (AAR) -> resolves
+```
 
-### Build and Run Web Application
+Both are declared in `common`'s `androidMain` (see [`common/build.gradle.kts`](common/build.gradle.kts)),
+which applies `com.android.kotlin.multiplatform.library`.
 
-To build and run the development version of the web app, use the run configuration from the run widget
-in your IDE’s toolbar or run it directly from the terminal:
-- on macOS/Linux
-  ```shell
-  ./gradlew :composeApp:wasmJsBrowserDevelopmentRun
-  ```
-- on Windows
-  ```shell
-  .\gradlew.bat :composeApp:wasmJsBrowserDevelopmentRun
-  ```
+## Steps to reproduce
 
-### Build and Run iOS Application
+1. Open this project in IntelliJ IDEA or Android Studio and let the Gradle import finish.
+2. Open `common/src/androidMain/kotlin/bug/JarVsAarRepro.kt`.
 
-To build and run the development version of the iOS app, use the run configuration from the run widget
-in your IDE’s toolbar or open the [/iosApp](./iosApp) directory in Xcode and run it from there.
+## Expected
 
----
+Both imports resolve (both dependencies are on the `androidMain` compile classpath, and the
+Gradle build compiles the file).
 
-Learn more about [Kotlin Multiplatform](https://www.jetbrains.com/help/kotlin-multiplatform-dev/get-started.html),
-[Compose Multiplatform](https://github.com/JetBrains/compose-multiplatform/#compose-multiplatform),
-[Kotlin/Wasm](https://kotl.in/wasm/)…
+## Actual
 
-We would appreciate your feedback on Compose/Web and Kotlin/Wasm in the public Slack channel [#compose-web](https://slack-chats.kotlinlang.org/c/compose-web).
-If you face any issues, please report them on [YouTrack](https://youtrack.jetbrains.com/newIssue?project=CMP).# KotlinBug
+- `import com.google.zxing.BarcodeFormat` (from the plain **JAR**) → **`Unresolved reference`** (red).
+- `import androidx.core.graphics.ColorUtils` (from the **AAR**) → resolves normally.
+
+Invalidate Caches / Restart does not help.
+
+## The build succeeds
+
+```
+./gradlew :common:compileAndroidMain
+```
+
+compiles `JarVsAarRepro.kt` (both imports) successfully. The problem is IDE-only analysis.
+
+## Environment
+
+- AGP 9.0.1, Kotlin 2.4.0, Gradle 9.5.1, compileSdk 36, minSdk 26 — the same versions as the real project where this was first observed.
+- Single-module project (`common`) — no composite build, no app module.
+- IDE: `<fill in from Help > About — e.g. IntelliJ IDEA 2026.1 / Android Studio Panda; include the Kotlin plugin / K2 analyzer version>`.
