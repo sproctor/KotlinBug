@@ -1,58 +1,61 @@
-# Repro: plain Maven JAR in `androidMain` is unresolved in the IDE for a `com.android.kotlin.multiplatform.library` module
+# Repro: plain Maven JAR unresolved in the IDE for a `com.android.kotlin.multiplatform.library` module with an `expect object`
 
 ## Summary
 
-In a module using the `com.android.kotlin.multiplatform.library` plugin, a plain Maven
-**JAR** dependency (`packaging=jar`) declared in the `androidMain` source set is reported
-as **`Unresolved reference` in the IDE** (IntelliJ IDEA / Android Studio), even though the
-Gradle build compiles it successfully. An **AAR** dependency (`packaging=aar`) in the *same*
-source set resolves correctly. The only difference between the two is the artifact
-packaging, which isolates the problem to how the IDE attaches jar (non-AAR) dependencies to
-an Android KMP source set's analysis classpath.
+In a module using `com.android.kotlin.multiplatform.library`, once the module contains an
+**`expect object`** (in `commonMain`) whose `actual` (in `androidMain`) imports a plain Maven
+**JAR** dependency, that jar — and in fact **every** jar import across the module's
+androidMain/jvmMain — shows as **`Unresolved reference`** in the IDE, while the Gradle build
+compiles fine. AAR dependencies in the same source set continue to resolve.
 
-This is **not** [KTIJ-37107](https://youtrack.jetbrains.com/issue/KTIJ-37107): this project is
-**not** a Gradle composite build (no `includeBuild`), and Android-library (AAR) dependencies
-resolve fine here — it is the plain JARs that don't.
+Key details established while narrowing this down:
+- An `expect fun` does **not** trigger it; an **`expect object`** does.
+- Adding the `expect object` flips the whole module: even a plain top-level `val` elsewhere in
+  androidMain that imported the same jar (and resolved fine) goes red once the `expect object`
+  is present.
+- The real project's construct is `expect object ReceiptRenderer { fun render(...): ImageBitmap? }`
+  (return type is a Compose type, itself an `expect class`). This repro mirrors that with
+  `expect object ReproRenderer { fun render(): ImageBitmap? }`.
+- It is **not** a Gradle composite build issue (distinct from
+  [KTIJ-37107](https://youtrack.jetbrains.com/issue/KTIJ-37107)): AARs resolve fine.
 
 ## Where to look
 
-[`common/src/androidMain/kotlin/bug/JarVsAarRepro.kt`](common/src/androidMain/kotlin/bug/JarVsAarRepro.kt):
+`common/src/androidMain/kotlin/bug/Repro.android.kt`:
 
 ```kotlin
-import com.google.zxing.BarcodeFormat        // from com.google.zxing:core  (JAR) -> RED in IDE
-import androidx.core.graphics.ColorUtils      // from androidx.core:core     (AAR) -> resolves
+import com.google.zxing.BarcodeFormat        // com.google.zxing:core  (JAR) -> unresolved in IDE
+import androidx.core.graphics.ColorUtils      // androidx.core:core     (AAR) -> resolves
 ```
 
-Both are declared in `common`'s `androidMain` (see [`common/build.gradle.kts`](common/build.gradle.kts)),
-which applies `com.android.kotlin.multiplatform.library`.
+`common/src/commonMain/kotlin/bug/Repro.kt` holds the `expect object ReproRenderer`.
 
-## Steps to reproduce
+## Steps
 
-1. Open this project in IntelliJ IDEA or Android Studio and let the Gradle import finish.
-2. Open `common/src/androidMain/kotlin/bug/JarVsAarRepro.kt`.
+1. Open the project in IntelliJ IDEA / Android Studio; let Gradle import finish.
+2. Open `Repro.android.kt` and observe the zxing import.
 
-## Expected
+## Expected vs actual
 
-Both imports resolve (both dependencies are on the `androidMain` compile classpath, and the
-Gradle build compiles the file).
+- Expected: both imports resolve (the build compiles both).
+- Actual: the JAR import is unresolved (red); the AAR import resolves.
 
-## Actual
-
-- `import com.google.zxing.BarcodeFormat` (from the plain **JAR**) → **`Unresolved reference`** (red).
-- `import androidx.core.graphics.ColorUtils` (from the **AAR**) → resolves normally.
-
-Invalidate Caches / Restart does not help.
-
-## The build succeeds
+## Build succeeds
 
 ```
-./gradlew :common:compileAndroidMain
+./gradlew :common:compileAndroidMain :common:compileKotlinJvm
 ```
 
-compiles `JarVsAarRepro.kt` (both imports) successfully. The problem is IDE-only analysis.
+compiles cleanly — the problem is IDE analysis only.
 
 ## Environment
 
-- AGP 9.0.1, Kotlin 2.4.0, Gradle 9.5.1, compileSdk 36, minSdk 26 — the same versions as the real project where this was first observed.
-- Single-module project (`common`) — no composite build, no app module.
-- IDE: `<fill in from Help > About — e.g. IntelliJ IDEA 2026.1 / Android Studio Panda; include the Kotlin plugin / K2 analyzer version>`.
+- AGP 9.0.1, Kotlin 2.4.0, Gradle 9.5.1, Compose 1.11.1, KSP 2.3.10, compileSdk 36.
+- IDE: `<fill in from Help > About>`.
+
+## Status note
+
+This standalone project mirrors the exact shape that was confirmed to reproduce inside a larger
+multi-module project. If a fresh clone does **not** show the red import, the trigger may
+additionally require the surrounding multi-module context; the commit history records the
+narrowing steps.
