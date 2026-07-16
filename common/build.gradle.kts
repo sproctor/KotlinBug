@@ -46,6 +46,10 @@ kotlin {
                 api(libs.kotlinx.io.core)
                 api(libs.kotlin.inject.runtime)
                 implementation(libs.compose.ui)
+                // THE TRIGGER: kermit + an `expect object` in this module makes plain-jar
+                // imports (zxing, below) show unresolved in the IDE. Remove this line and the
+                // zxing import resolves again.
+                implementation(libs.kermit)
             }
         }
         androidMain {

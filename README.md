@@ -1,23 +1,27 @@
-# Repro: plain Maven JAR unresolved in the IDE for a `com.android.kotlin.multiplatform.library` module with an `expect object`
+# Repro: `kermit` + an `expect object` make plain-JAR imports unresolved in the IDE (`com.android.kotlin.multiplatform.library`)
 
 ## Summary
 
-In a module using `com.android.kotlin.multiplatform.library`, once the module contains an
-**`expect object`** (in `commonMain`) whose `actual` (in `androidMain`) imports a plain Maven
-**JAR** dependency, that jar — and in fact **every** jar import across the module's
-androidMain/jvmMain — shows as **`Unresolved reference`** in the IDE, while the Gradle build
-compiles fine. AAR dependencies in the same source set continue to resolve.
+In a module using `com.android.kotlin.multiplatform.library`, when the module **both**:
+1. contains an **`expect object`** (in `commonMain`), and
+2. depends on **`co.touchlab:kermit`**,
 
-Key details established while narrowing this down:
-- An `expect fun` does **not** trigger it; an **`expect object`** does.
-- Adding the `expect object` flips the whole module: even a plain top-level `val` elsewhere in
-  androidMain that imported the same jar (and resolved fine) goes red once the `expect object`
-  is present.
-- The real project's construct is `expect object ReceiptRenderer { fun render(...): ImageBitmap? }`
-  (return type is a Compose type, itself an `expect class`). This repro mirrors that with
-  `expect object ReproRenderer { fun render(): ImageBitmap? }`.
-- It is **not** a Gradle composite build issue (distinct from
-  [KTIJ-37107](https://youtrack.jetbrains.com/issue/KTIJ-37107)): AARs resolve fine.
+then **every plain Maven JAR import** in the module's `androidMain`/`jvmMain` shows as
+**`Unresolved reference`** in the IDE (IntelliJ IDEA / Android Studio), even though the Gradle
+build compiles fine. **AAR** dependencies in the same source set keep resolving.
+
+Neither condition alone triggers it:
+- kermit present but no `expect object` → resolves fine.
+- `expect object` present but no kermit → resolves fine.
+- both → all jar imports in the module go red (whole-module effect — even an unrelated
+  top-level `val` importing a jar goes red).
+
+Likely-relevant detail: `kermit` publishes **separate debug/release Android library variants**
+(`kermit-android` + `kermit-android-debug`, the `publishLibraryVariants("release","debug")`
+pattern), unlike e.g. `kotlinx-coroutines-core` (a KMP dep that does **not** trigger this).
+
+Not a Gradle composite build issue (distinct from
+[KTIJ-37107](https://youtrack.jetbrains.com/issue/KTIJ-37107)); AARs resolve fine.
 
 ## Where to look
 
@@ -28,17 +32,15 @@ import com.google.zxing.BarcodeFormat        // com.google.zxing:core  (JAR) -> 
 import androidx.core.graphics.ColorUtils      // androidx.core:core     (AAR) -> resolves
 ```
 
-`common/src/commonMain/kotlin/bug/Repro.kt` holds the `expect object ReproRenderer`.
+- `common/src/commonMain/kotlin/bug/Repro.kt` — the `expect object ReproRenderer`.
+- `common/build.gradle.kts` — `implementation(libs.kermit)` is the trigger. **Comment it out and
+  the zxing import resolves again.**
 
 ## Steps
 
-1. Open the project in IntelliJ IDEA / Android Studio; let Gradle import finish.
-2. Open `Repro.android.kt` and observe the zxing import.
-
-## Expected vs actual
-
-- Expected: both imports resolve (the build compiles both).
-- Actual: the JAR import is unresolved (red); the AAR import resolves.
+1. Open the project; let the Gradle import finish.
+2. Open `Repro.android.kt`; the zxing import is red.
+3. Remove `implementation(libs.kermit)` from `common/build.gradle.kts`, re-sync → it resolves.
 
 ## Build succeeds
 
@@ -46,16 +48,9 @@ import androidx.core.graphics.ColorUtils      // androidx.core:core     (AAR) ->
 ./gradlew :common:compileAndroidMain :common:compileKotlinJvm
 ```
 
-compiles cleanly — the problem is IDE analysis only.
+compiles both imports — the problem is IDE analysis only.
 
 ## Environment
 
-- AGP 9.0.1, Kotlin 2.4.0, Gradle 9.5.1, Compose 1.11.1, KSP 2.3.10, compileSdk 36.
+- AGP 9.0.1, Kotlin 2.4.0, Gradle 9.5.1, Compose 1.11.1, kermit 2.1.0, compileSdk 36.
 - IDE: `<fill in from Help > About>`.
-
-## Status note
-
-This standalone project mirrors the exact shape that was confirmed to reproduce inside a larger
-multi-module project. If a fresh clone does **not** show the red import, the trigger may
-additionally require the surrounding multi-module context; the commit history records the
-narrowing steps.
