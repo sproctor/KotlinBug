@@ -1,66 +1,93 @@
-This is a Kotlin Multiplatform project targeting Android, iOS, Web, Desktop (JVM).
+# SelectionContainer crashes on a mouse press below the last selectable (1.12.0-beta02)
 
-* [/composeApp](./composeApp/src) is for code that will be shared across your Compose Multiplatform applications.
-  It contains several subfolders:
-  - [commonMain](./composeApp/src/commonMain/kotlin) is for code that’s common for all targets.
-  - Other folders are for Kotlin code that will be compiled for only the platform indicated in the folder name.
-    For example, if you want to use Apple’s CoreCrypto for the iOS part of your Kotlin app,
-    the [iosMain](./composeApp/src/iosMain/kotlin) folder would be the right place for such calls.
-    Similarly, if you want to edit the Desktop (JVM) specific part, the [jvmMain](./composeApp/src/jvmMain/kotlin)
-    folder is the appropriate location.
+Minimal reproduction for a regression introduced in Compose Multiplatform **1.12.0-beta02**.
 
-* [/iosApp](./iosApp/iosApp) contains iOS applications. Even if you’re sharing your UI with Compose Multiplatform,
-  you need this entry point for your iOS app. This is also where you should add SwiftUI code for your project.
+Pressing the mouse inside a `SelectionContainer` but *below every selectable it contains* - the
+list's bottom padding, or just the empty space under a short list - throws:
 
-### Build and Run Android Application
+```
+java.lang.IndexOutOfBoundsException: Index 20 out of bounds for length 20
+    at androidx.compose.foundation.text.selection.MultiSelectionLayout.getCrossStatus(SelectionLayout.kt:184)
+    at androidx.compose.foundation.text.selection.MultiSelectionLayout.startOrEndSlotToIndex(SelectionLayout.kt:295)
+    at androidx.compose.foundation.text.selection.MultiSelectionLayout.getStartInfo(SelectionLayout.kt:188)
+    at androidx.compose.foundation.text.selection.SelectionAdjustment$Companion.None$lambda$0(SelectionAdjustment.kt:46)
+    at androidx.compose.foundation.text.selection.SelectionManager.updateSelection(SelectionManager.kt:1447)
+    at androidx.compose.foundation.text.selection.SelectionManager.startSelection(SelectionManager.kt:1406)
+    at androidx.compose.foundation.text.selection.SelectionRegistrarImpl.notifySelectionUpdateStart(SelectionRegistrarImpl.kt:233)
+    at androidx.compose.foundation.text.modifiers.SelectionModifierNodeKt$DefaultMouseSelectionObserver$1.onStart(SelectionModifierNode.kt:254)
+    at androidx.compose.foundation.text.selection.SelectionGesturesKt.mouseSelection(SelectionGestures.kt:294)
+```
 
-To build and run the development version of the Android app, use the run configuration from the run widget
-in your IDE’s toolbar or build it directly from the terminal:
-- on macOS/Linux
-  ```shell
-  ./gradlew :composeApp:assembleDebug
-  ```
-- on Windows
-  ```shell
-  .\gradlew.bat :composeApp:assembleDebug
-  ```
+On desktop this reaches the AWT event thread as an uncaught exception and kills the app.
 
-### Build and Run Desktop (JVM) Application
+## Reproducing
 
-To build and run the development version of the desktop app, use the run configuration from the run widget
-in your IDE’s toolbar or run it directly from the terminal:
-- on macOS/Linux
-  ```shell
-  ./gradlew :composeApp:run
-  ```
-- on Windows
-  ```shell
-  .\gradlew.bat :composeApp:run
-  ```
+Automated, no clicking required:
 
-### Build and Run Web Application
+```shell
+./gradlew :composeApp:jvmTest
+```
 
-To build and run the development version of the web app, use the run configuration from the run widget
-in your IDE’s toolbar or run it directly from the terminal:
-- on macOS/Linux
-  ```shell
-  ./gradlew :composeApp:wasmJsBrowserDevelopmentRun
-  ```
-- on Windows
-  ```shell
-  .\gradlew.bat :composeApp:wasmJsBrowserDevelopmentRun
-  ```
+`pressBelowLastItem` and `pressBelowLastItemNonLazy` fail; the other three pass. Setting
+`composeMultiplatform` in `gradle/libs.versions.toml` to `1.11.1` makes all of them pass (the
+`...WithFlagDisabled` test does not compile on 1.11.1 - the flag does not exist yet - so drop it
+when checking that version).
 
-### Build and Run iOS Application
+By hand:
 
-To build and run the development version of the iOS app, use the run configuration from the run widget
-in your IDE’s toolbar or open the [/iosApp](./iosApp) directory in Xcode and run it from there.
+```shell
+./gradlew :composeApp:run
+```
 
----
+The window shows 20 lines of text with 64dp of vertical padding. Clicking in the empty area below
+the last line crashes; clicking above the first line or on a line does not.
 
-Learn more about [Kotlin Multiplatform](https://www.jetbrains.com/help/kotlin-multiplatform-dev/get-started.html),
-[Compose Multiplatform](https://github.com/JetBrains/compose-multiplatform/#compose-multiplatform),
-[Kotlin/Wasm](https://kotl.in/wasm/)…
+## What is happening
 
-We would appreciate your feedback on Compose/Web and Kotlin/Wasm in the public Slack channel [#compose-web](https://slack-chats.kotlinlang.org/c/compose-web).
-If you face any issues, please report them on [YouTrack](https://youtrack.jetbrains.com/newIssue?project=CMP).# KotlinBug
+1.12 added `ComposeFoundationFlags.isMouseSelectionBetweenTextEnabled` (default **on**), which lets
+a mouse drag start a selection from the empty space between selectables. `SelectionManager
+.getSelectionLayout` passes it to `SelectionLayoutBuilder` as `allowSelectionBetweenSelectables`,
+and `appendSelectableInfoToBuilder` then skips its `isSelected(...)` guard, so **every** selectable
+is appended to the layout instead of only the ones the gesture actually touches.
+
+Slots are assigned as: selectable *i* gets the odd slot `2i + 1`, and a position that falls before
+selectable *i* gets the even slot `2i`. If the press is after *every* selectable, no slot is ever
+assigned, and `SelectionLayoutBuilder.build()` falls back to
+
+```kotlin
+val lastSlot = currentSlot + 1   // == 2 * infoList.size
+```
+
+for both `startSlot` and `endSlot`. `MultiSelectionLayout.crossStatus` then takes its
+`startSlot == endSlot` branch:
+
+```kotlin
+// because one of the slots is not-dragging, it must be on a text directly
+// because one of the slots is on a text directly and the start/end slots are equal,
+// they both must be odd. Given this, dividing the slot by 2 should give us the correct info index.
+else -> infoList[startSlot / 2].rawCrossStatus
+```
+
+The comment's invariant - that equal slots are odd, i.e. on a selectable - no longer holds once
+"between" positions are allowed. Here both slots are `2 * size`, an even "between" slot past the
+end, so `startSlot / 2 == size` indexes one past the end of `infoList`.
+
+Before 1.12 this was unreachable: without the flag the `isSelected` guard rejected every
+selectable, `infoList` came out empty, and `build()` returned `null`.
+
+Pressing *above* the first selectable does not crash, because that position gets the even slot `0`
+and `0 / 2` happens to land on a valid index.
+
+## Notes
+
+- Not specific to lazy layouts: `pressBelowLastItemNonLazy` uses a plain `Column` and crashes the
+  same way. `LazyColumn` just makes it easy to hit, since a list shorter than its viewport always
+  leaves empty space below the last item.
+- Requires more than one selectable. With a single one, `build()` returns a `SingleSelectionLayout`,
+  whose `crossStatus` never indexes `infoList`.
+- Mouse only. The flag is `isMouseSelectionBetweenTextEnabled && !isInTouchMode`, so touch input
+  takes the old path.
+- Workaround: `ComposeFoundationFlags.isMouseSelectionBetweenTextEnabled = false` before the first
+  composition (covered by the `pressBelowLastItemWithFlagDisabled` test).
+
+Tested against `org.jetbrains.compose` 1.12.0-beta02 with Kotlin 2.4.10 on Linux.
